@@ -2,10 +2,10 @@
 
 Compute $C = A^n$ for a square FP32 row-major matrix $A \in \mathbb{R}^{\text{size} \times \text{size}}$ and non-negative integer $n$.
 
-- **Judge GPU**: NVIDIA H20 (Hopper `sm_90`, 78 SMs, 4.0 TB/s HBM3, 60 MB L2, 228 KB SMEM/SM, 44 TFLOPS FP32 / 74 TFLOPS TF32 / 148 TFLOPS BF16)
+- **Judge GPU**: NVIDIA H20 (Hopper `sm_90`, 78 SMs, 4.0 TB/s HBM3, 60 MB L2, 228 KB SMEM/SM, 44 TFLOPS FP32 / 74 TFLOPS TF32 / 148 TFLOPS FP16/BF16)
 - **Official Baseline (`T_std`)**: `4.06652 ms` across 9 test cases (`512, 1024, 2048` × `power = 2, 4, 8`; total `117.57 GFLOPs`)
-- **Scoring**: `1000 × min(1.5, T_std / total_GPU_time)` → maximum `1500` points at `≤ 2.711 ms`
-- **Tuning GPU**: Google Colab NVIDIA L4 (`sm_89`, 58 SMs, 48 MB L2) with `nvcc -arch=sm_90 --ptxas-options=-v` verification for H20
+- **Scoring**: `1000 × min(1.5, T_std / total_GPU_time)` → maximum `1500.0000` points at `≤ 2.711 ms`
+- **Best Official Result**: **`1500.0000 / 1500` pts (MAX SCORE)** · **`1.63 ms`** · **`68,458.97 GFLOPS`** · `9/9 Accepted` ([submission `cmwvm9lw6a5ctymcuxinva2jj`](https://competition.iquestlab.com/submissions/cmwvm9lw6a5ctymcuxinva2jj))
 
 ---
 
@@ -13,81 +13,81 @@ Compute $C = A^n$ for a square FP32 row-major matrix $A \in \mathbb{R}^{\text{si
 
 | File | Description |
 |---|---|
-| [`solution.cu`](solution.cu) | **Primary submission** (`3×BF16` Tensor Core FP32-emulation, self-contained pure CUDA + PTX, zero external libs) |
-| [`benchmark.cu`](benchmark.cu) | Verification (29 edge cases + 9 official cases) & benchmark harness vs cuBLAS FP32 / TF32 |
+| [`solution.cu`](solution.cu) | **Winning 1500-pt submission** (`v5_fp16_tc`: 3-stage `cp.async.ca` + XOR-swizzled FP16 Tensor Core, `1.63 ms` on H20) |
+| [`benchmark.cu`](benchmark.cu) | Local/Colab verification (29 edge cases + 9 official cases) & benchmark harness vs cuBLAS FP32 / TF32 |
 | [`versions/v0_naive.cu`](versions/v0_naive.cu) | Baseline: 32×32 shared-memory tiled SGEMM + zero-copy binary exponentiation |
 | [`versions/v1_regtile.cu`](versions/v1_regtile.cu) | 128×128×8 double-buffered register-tiled FP32 SGEMM + CTA swizzle |
-| [`versions/v2_fp32_simt.cu`](versions/v2_fp32_simt.cu) | **Exact IEEE-754 FP32** (`64×128×16`, `cp.async.ca`, Split-K=4 for 512/1024) — fallback if judge requires `< 1e-5` tolerance |
-| [`versions/v3_bf16_3x_tc.cu`](versions/v3_bf16_3x_tc.cu) | **3×BF16 Tensor Core** (`64×128×16`, `mma.sync.m16n8k16.bf16`, split-load pipeline, Split-K) — promoted to `solution.cu` |
-| [`versions/v4_tf32_tc.cu`](versions/v4_tf32_tc.cu) | **Pure-PTX TF32 Tensor Core** (`64×128×16`, `cp.async.ca`, `mma.sync.m16n8k8.tf32`) — fastest if judge accepts TF32 tolerance (`~8e-4`) |
+| [`versions/v2_fp32_simt.cu`](versions/v2_fp32_simt.cu) | **Exact IEEE-754 FP32** (`64×128×16`, `cp.async.ca`, Split-K=4) — 1.11× faster than cuBLAS FP32 on L4 (`l2_rel = 2.29e-6`) |
+| [`versions/v3_bf16_3x_tc.cu`](versions/v3_bf16_3x_tc.cu) | **3×BF16 Tensor Core** (`64×128×16`, `mma.sync.m16n8k16.bf16`) — `4.53 ms` / `897.31 pts` on H20 (`l2_rel = 5.40e-5`) |
+| [`versions/v4_tf32_tc.cu`](versions/v4_tf32_tc.cu) | **Pure-PTX TF32 Tensor Core** (`64×128×16`, `cp.async.ca`, `mma.sync.m16n8k8.tf32`) — `3.22 ms` / `1261.53 pts` on H20 |
+| [`versions/v5_fp16_tc.cu`](versions/v5_fp16_tc.cu) | **FP16 Tensor Core (3-stage `cp.async.ca` + XOR swizzle)** — **`1.63 ms` / `1500.0000 pts` on H20** (promoted to `solution.cu`) |
 
 ---
 
-## Key Optimizations (Designed for H20 `sm_90`)
+## Official NVIDIA H20 Submission Results
 
-1. **Zero-Copy Power-of-2 & Persistent Workspace Driver**
-   - `n == 0` writes $I$ in one vectorized pass; `n == 1` performs async D2D copy.
-   - For $n = 2^k$ (covering all 9 benchmark cases): `n=2` writes directly to `output_matrix` with **zero** temporary buffers; `n=4, 8, ...` ping-pongs between `output_matrix` and a single persistent workspace buffer so the final squaring lands directly in `output_matrix` with **zero** `cudaMalloc`/`cudaFree` or extra `cudaMemcpy` overhead on timed runs.
-   - General $n$ uses binary exponentiation skipping the initial multiply-by-identity, with a bounds-checked fallback kernel for arbitrary matrix sizes (tested on 29 edge cases: sizes `1..513`, powers `0..7`).
+All three Tensor Core submissions passed **9/9** test cases on NVIDIA H20 (`nvcc CUDA 13.0.2`):
 
-2. **H20 Wave-Balanced Tile Geometry (`64×128×16`, 128 threads/block)**
-   - A standard `128×128` tile yields only 16 blocks on `512×512`, 64 blocks on `1024×1024` (leaving 14+ SMs idle on H20's 78 SMs), and 256 blocks on `2048×2048` (severe tail wave).
-   - `64×128×16` (128 threads, ≤128 regs → **4 blocks/SM** on both L4 and H20) launches **512 blocks** on `2048×2048` (6.56 blocks/SM on H20, >93% wave balance) while keeping 512-byte contiguous rows for `B` and L2-friendly CTA swizzling (`GROUP_M = 4`).
-   - **Split-K** (`KSPLIT=4` for `512×512` → 128 blocks; `KSPLIT=2` or `4` for `1024×1024` → 256–512 blocks) saturates all 78 SMs on H20 with a single vectorized `float4` reduction epilogue.
+| Submission | Kernel | H20 Total Time | Throughput | Score | Status |
+|---|---|---:|---:|---:|---|
+| `cmwvk684z9pyss1dv8zorpfgb` | `v3_bf16_3x_tc.cu` | 4.53 ms | 30.20 TFLOPS | 897.3112 | Accepted (9/9) |
+| `cmwvk9d9p9r0pyxqhpcbhghsj` | `v4_tf32_tc.cu` | 3.22 ms | 41.21 TFLOPS | 1261.5299 | Accepted (9/9) |
+| **`cmwvm9lw6a5ctymcuxinva2jj`** | **`solution.cu` (`v5_fp16_tc.cu`)** | **1.63 ms** | **68.46 TFLOPS** | **1500.0000** | **Accepted (9/9)** |
 
-3. **3×BF16 Tensor Core FP32 Emulation (`solution.cu`)**
-   - Decomposes each FP32 input into $x \approx x_{\text{hi}} + x_{\text{lo}}$ using vectorized `cvt.rn.bf16x2.f32` (`__float22bfloat162_rn`), preserving the full 8-bit FP32 exponent (zero overflow/underflow) and ~16 bits of mantissa precision.
-   - Computes $A_{\text{hi}} B_{\text{hi}} + A_{\text{hi}} B_{\text{lo}} + A_{\text{lo}} B_{\text{hi}}$ in FP32 accumulators via inline PTX `ldmatrix.sync.aligned` + `mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32`, with double-buffered `B` fragments and 3-stage split global loads to stay at 128 regs/thread.
-   - On H20 (148 TFLOPS BF16 vs 44 TFLOPS FP32), `3×BF16` raises the compute ceiling to **49.3 TFLOPS** while keeping `l2_rel = 5.40e-5` on `2048×2048 A^8` (**15× more accurate than TF32**).
+### Per-Case H20 Runtime Breakdown
+
+| Test Case | `v3_bf16_3x_tc` | `v4_tf32_tc` | **`solution.cu` (`v5_fp16_tc`)** | Speedup (`v5` vs `v4`) |
+|---|---:|---:|---:|---:|
+| `512×512 power=2` | 19.74 μs | 15.54 μs | **13.54 μs** | 1.15× |
+| `512×512 power=4` | 38.96 μs | 30.59 μs | **23.78 μs** | 1.29× |
+| `512×512 power=8` | 58.05 μs | 45.22 μs | **33.92 μs** | 1.33× |
+| `1024×1024 power=2` | 101.76 μs | 72.05 μs | **42.21 μs** | 1.71× |
+| `1024×1024 power=4` | 202.85 μs | 143.63 μs | **79.12 μs** | 1.82× |
+| `1024×1024 power=8` | 304.98 μs | 215.20 μs | **116.32 μs** | 1.85× |
+| `2048×2048 power=2` | 634.63 μs | 450.83 μs | **223.91 μs** | 2.01× |
+| `2048×2048 power=4` | 1.27 ms | 899.88 μs | **438.69 μs** | 2.05× |
+| `2048×2048 power=8` | 1.90 ms | 1.35 ms | **653.89 μs** | 2.06× |
+| **TOTAL** | **4.53 ms** | **3.22 ms** | **1.63 ms** | **1.98×** |
 
 ---
 
-## Benchmark Results (NVIDIA L4 `sm_89`, CUDA 13.0)
+## Key Architecture & Optimizations in `solution.cu` (`v5_fp16_tc.cu`)
 
-All versions passed **29/29 edge-case tests** (`size = 1..513`, `n = 0..7`) and **9/9 official benchmark cases** verified against `cublasSgemm(CUBLAS_PEDANTIC_MATH)`.
+1. **FP16 Tensor Core (`mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32`) with FP32 Accumulation**
+   - Unlocks H20's **148 TFLOPS FP16 Tensor Core** (2.0× TF32's 74 TFLOPS) while preserving the same 10-bit explicit mantissa precision as TF32 and accumulating in FP32.
+   - Input matrix $A$ is converted once via a vectorized `fp32_to_fp16_vec8` kernel (`2×float4 → uint4` coalesced `STG.128`).
+   - Intermediate powers ($A^2, A^4$) are written directly in FP16 (`OUT_FP16 = true`) to persistent device workspace buffers (halving memory traffic and eliminating all `cvt` inside the GEMM K-loop); only the final squaring writes FP32 directly into `output_matrix`.
 
-### Progression Summary (Total across all 9 official test cases = 117.57 GFLOPs)
+2. **3-Stage `cp.async.ca` Pipeline + Zero-Padding XOR-Swizzled SMEM**
+   - Tile `64×128×32` (128 threads = `2×2` warps, 4 blocks/SM on H20) uses `36 KB` shared memory (`STAGES = 3`) with **zero padding** and **zero bank conflicts** on both `cp.async.ca` writes and `ldmatrix` reads:
+     - `sA[3][64][32]`: `swz_chunk = chunk ^ ((row >> 1) & 3)`
+     - `sB[3][32][128]`: `swz_chunk = chunk ^ (row & 7)`
+   - Uses `ldmatrix.sync.aligned.m8n8.x4.shared.b16` for `A` and `ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16` for `B` (loading two `16×8` B-tiles per instruction with double-buffered `rb` fragments), with a single `__syncthreads()` per `BK=32` K-tile.
 
-| Version | L4 Total Time | Avg TFLOPS | vs cuBLAS FP32 | vs cuBLAS TF32 | `2048 p=8` `l2_rel` | `2048 p=8` `max_abs` | H20 (`sm_90`) Regs / SMEM |
-|---|---:|---:|---:|---:|---:|---:|---|
-| `v0_naive` (32×32 tiled) | 74.6465 ms | 1.58 | 0.11× | 0.05× | `2.29e-6` | `4.19e-9` | 37 regs / 8.4 KB (0 spills) |
-| `v1_regtile` (128×128×8) | 8.8995 ms | 13.21 | 1.01× | 0.46× | `2.29e-6` | `4.19e-9` | 127 regs / 16.6 KB (0 spills) |
-| cuBLAS FP32 (`PEDANTIC`) | 8.37–9.56 ms | 12.3–14.1 | 1.00× | 0.46× | `0` | `0` | Reference |
-| **`v2_fp32_simt` (Exact FP32)** | **8.5719 ms** | **13.72** | **1.11×** | 0.48× | **`2.29e-6`** | **`4.19e-9`** | 127 regs / 25.1 KB (0 spills) |
-| **`solution.cu` (`3×BF16` TC)** | **4.9725 ms** | **23.64** | **1.81×** | 0.82× | **`5.40e-5`** | **`8.82e-8`** | 128 regs / 29.7 KB |
-| cuBLAS TF32 | 4.04–4.15 ms | 28.3–29.1 | 2.24× | 1.00× | `7.96e-4` | `1.16e-6` | Reference |
-| **`v4_tf32_tc` (Pure-PTX TF32)** | **3.6157 ms** | **32.52** | **2.50×** | **1.12×** | **`7.96e-4`** | **`1.16e-6`** | 120 regs / 27.6 KB (0 spills) |
+3. **H20 78-SM Wave Balancing & General Edge-Case Coverage**
+   - `2048×2048`: `512` CTAs (6.56 blocks/SM on H20) with L2-friendly CTA swizzling (`GROUP_M = 4`).
+   - `512×512` (`Split-K = 4` → 128 CTAs) and `1024×1024` (`Split-K = 2` → 256 CTAs) with fused FP16/FP32 vectorized `float4` reduction epilogue saturate all 78 SMs on H20.
+   - Handles `n = 0` ($I$), `n = 1` ($A$), arbitrary general $n$ via binary exponentiation, and arbitrary non-multiple-of-128 matrix sizes via a bounds-checked fallback kernel.
 
-### Per-Case Breakdown (`solution.cu` — `3×BF16` TC on L4)
+---
 
-| Test Case | `solution.cu` (ms) | TFLOPS | cuBLAS FP32 (ms) | Speedup vs FP32 | `max_abs` | `l2_rel` |
-|---|---:|---:|---:|---:|---:|---:|
-| `512×512 p=2` | 0.0236 | 11.40 | 0.0379 | 1.61× | `3.48e-7` | `4.74e-6` |
-| `512×512 p=4` | 0.0430 | 12.48 | 0.0655 | 1.52× | `1.83e-7` | `8.15e-6` |
-| `512×512 p=8` | 0.0625 | 12.89 | 0.0942 | 1.51× | `3.17e-8` | `1.27e-5` |
-| `1024×1024 p=2` | 0.0983 | 21.85 | 0.1750 | 1.78× | `2.35e-7` | `4.31e-6` |
-| `1024×1024 p=4` | 0.2089 | 20.56 | 0.3461 | 1.66× | `1.69e-7` | `8.88e-6` |
-| `1024×1024 p=8` | 0.3420 | 18.84 | 0.5253 | 1.54× | `3.42e-8` | `1.63e-5` |
-| `2048×2048 p=2` | 0.6840 | 25.12 | 1.0260 | 1.50× | `4.41e-7` | `9.60e-6` |
-| `2048×2048 p=4` | 1.3855 | 24.80 | 2.6880 | 1.94× | `3.32e-7` | `2.46e-5` |
-| `2048×2048 p=8` | 2.1248 | 24.26 | 4.0264 | 1.89× | `8.82e-8` | `5.40e-5` |
-| **TOTAL** | **4.9725** | **23.64** | **8.9845** | **1.81×** | — | — |
+## Colab L4 (`sm_89`) Development Benchmarks (Reference Progression)
 
-### Submission Guidance on NVIDIA H20
-- **Primary**: Submit [`solution.cu`](solution.cu) (`3×BF16` TC) — targets ~2.6–2.8 ms on H20 (~1450–1500/1500 pts) with `l2_rel ≤ 5.4e-5`.
-- **If judge requires strict `< 1e-5` precision**: Submit [`versions/v2_fp32_simt.cu`](versions/v2_fp32_simt.cu) (100% exact IEEE-754 FP32, beats cuBLAS FP32 by 1.11×).
-- **If judge accepts TF32 precision (`~8e-4`)**: Submit [`versions/v4_tf32_tc.cu`](versions/v4_tf32_tc.cu) (pure-PTX TF32, beats cuBLAS TF32 by 1.12×, guaranteed 1500/1500 pts ceiling on H20).
+| Version | L4 Total (9 cases) | Avg TFLOPS | vs cuBLAS FP32 | `2048 p=8` `l2_rel` |
+|---|---:|---:|---:|---:|
+| `v0_naive` | 74.6465 ms | 1.58 | 0.11× | `2.29e-6` |
+| `v1_regtile` | 8.8995 ms | 13.21 | 1.01× | `2.29e-6` |
+| cuBLAS FP32 (`PEDANTIC`) | 8.37–9.56 ms | 12.3–14.1 | 1.00× | `0` |
+| `v2_fp32_simt` | 8.5719 ms | 13.72 | 1.11× | `2.29e-6` |
+| `v3_bf16_3x_tc` | 4.9725 ms | 23.64 | 1.81× | `5.40e-5` |
+| cuBLAS TF32 | 4.04–4.15 ms | 28.3–29.1 | 2.24× | `7.96e-4` |
+| `v4_tf32_tc` | 3.6157 ms | 32.52 | 2.50× | `7.96e-4` |
 
 ---
 
 ## Build & Run Locally / on Colab
 
 ```bash
-# Compile for H20 (sm_90) or L4 (sm_89)
 nvcc -O3 -arch=sm_89 benchmark.cu solution.cu -lcublas -o bench_solution
 ./bench_solution
-
-# Swap in any archived variant:
-nvcc -O3 -arch=sm_89 benchmark.cu versions/v2_fp32_simt.cu -lcublas -o bench_fp32 && ./bench_fp32
-nvcc -O3 -arch=sm_89 benchmark.cu versions/v4_tf32_tc.cu -lcublas -o bench_tf32 && ./bench_tf32
 ```

@@ -4,6 +4,10 @@ High-performance CUDA C++ kernels developed and tuned for GPU programming compet
 
 ## Contents
 
-| Contest | Problem | Target GPU | Tuning GPU | Best Result (vs cuBLAS FP32 on L4) | Path |
-|---|---|---|---|---|---|
-| `practice-2026-11-25` | **A. Matrix Nth Power** ($C = A^n$) | NVIDIA H20 (`sm_90`) | NVIDIA L4 (`sm_89`) | **1.81×** (`3×BF16` TC, `l2_rel = 5.4e-5`) / **1.11×** (Exact FP32) / **2.50×** (`TF32` TC) | [problem-a-matrix-nth-power](iquest/practice-2026-11-25/problem-a-matrix-nth-power/) |
+| Contest | Problem | Judge GPU | Official Score | Official H20 Time | Throughput | Path |
+|---|---|---|---|---|---|---|
+| `practice-2026-11-25` | **A. Matrix Nth Power** ($C = A^n$) | NVIDIA H20 (`sm_90`) | **1500.0000 / 1500** | **1.63 ms** (vs `4.06652 ms` baseline, **2.49×**) | **68.46 TFLOPS** | [problem-a-matrix-nth-power](iquest/practice-2026-11-25/problem-a-matrix-nth-power/) |
+
+## Workspace Skills
+
+- [`iquest-submit`](.agents/skills/iquest-submit/SKILL.md) — Verified browser submission workflow for `competition.iquestlab.com` (Monaco editor atomic insertion, sample Run validation, official H20 Submit & result extraction).
