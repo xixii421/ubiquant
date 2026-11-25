@@ -1,0 +1,15 @@
+# Build artifacts
+*.o
+*.out
+*.so
+*.cubin
+*.ptx
+bench_*
+tune_*
+exp_*
+
+# OS / Editor
+.DS_Store
+*.swp
+.vscode/
+.idea/
